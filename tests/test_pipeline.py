@@ -10,7 +10,7 @@ import httpx
 import pandas as pd
 import pytest
 
-from src.collect import fetch_json
+from src.collect import _retry_delay, fetch_json
 from src.models import parse_country, parse_ipinfo, parse_weather
 from src.storage import save_and_benchmark
 from src.transform import build_unified_frame, split_frames
@@ -45,6 +45,49 @@ async def test_fetch_json_실패시_재시도후_예외() -> None:
             await fetch_json(client, "test", "http://example.test", retries=1)
 
     assert call_count == 2  # 최초 1회 + 재시도 1회
+
+
+async def test_429_후_성공하면_결과_반환() -> None:
+    """호출 제한(429) 이 한 번 떠도 재시도해서 성공하면 정상 결과를 돌려준다."""
+    responses = [
+        httpx.Response(429, headers={"Retry-After": "0"}),  # 첫 호출은 제한에 걸림
+        httpx.Response(200, json={"ok": 1}),  # 재시도는 성공
+    ]
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return responses.pop(0)
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        result = await fetch_json(client, "test", "http://example.test", retries=1)
+
+    assert result == {"ok": 1}
+
+
+def test_429_대기시간은_일반오류보다_길다() -> None:
+    """429 는 짧은 대기로 풀리지 않으므로 일반 오류보다 오래 기다린다."""
+    request = httpx.Request("GET", "http://example.test")
+    rate_limited = httpx.HTTPStatusError(
+        "429", request=request, response=httpx.Response(429, request=request)
+    )
+    server_error = httpx.HTTPStatusError(
+        "500", request=request, response=httpx.Response(500, request=request)
+    )
+
+    assert _retry_delay(0, rate_limited) > _retry_delay(0, server_error)
+    # 지수 백오프: 재시도 횟수가 늘수록 대기도 길어진다
+    assert _retry_delay(1, rate_limited) > _retry_delay(0, rate_limited)
+
+
+def test_429_Retry_After_헤더를_따른다() -> None:
+    """서버가 Retry-After 로 대기 시간을 지정하면 그 값을 사용한다."""
+    request = httpx.Request("GET", "http://example.test")
+    error = httpx.HTTPStatusError(
+        "429",
+        request=request,
+        response=httpx.Response(429, headers={"Retry-After": "7"}, request=request),
+    )
+
+    assert _retry_delay(0, error) == 7.0
 
 
 # --- 변환 ------------------------------------------------------------------

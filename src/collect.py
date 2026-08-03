@@ -10,12 +10,36 @@ asyncio + httpx 를 사용해 3개의 공개 API를 asyncio.gather() 로 동시�
 from __future__ import annotations
 
 import asyncio
+import random
 import time
 from typing import Any
 
 import httpx
 
 from src.config import MAX_RETRIES, TIMEOUT_SECONDS, build_api_targets
+
+# 429(호출 제한) 발생 시 첫 재시도까지의 기본 대기 시간(초).
+# 이후 지수적으로 늘어난다: 4s -> 8s -> 16s
+RATE_LIMIT_BASE_DELAY = 4.0
+
+
+def _retry_delay(attempt: int, error: Exception) -> float:
+    """재시도까지 기다릴 시간(초)을 계산한다.
+
+    - 429(Too Many Requests): 호출 제한이므로 짧은 대기로는 풀리지 않는다.
+      서버가 Retry-After 헤더로 대기 시간을 알려주면 그 값을 따르고,
+      없으면 지수 백오프(4s → 8s → 16s ...)로 충분히 물러난다.
+    - 그 외 일시적 오류: 짧은 지수 백오프(0.5s → 1.0s ...)로 빠르게 재시도한다.
+
+    지터(무작위 가산)를 더해 여러 요청의 재시도가 같은 시각에 몰리는 것을 막는다.
+    """
+    if isinstance(error, httpx.HTTPStatusError) and error.response.status_code == 429:
+        retry_after = error.response.headers.get("Retry-After")
+        if retry_after and retry_after.isdigit():
+            return float(retry_after)  # 서버가 지정한 대기 시간을 우선한다
+        return RATE_LIMIT_BASE_DELAY * (2**attempt) + random.uniform(0, 1)
+
+    return 0.5 * (attempt + 1) + random.uniform(0, 0.3)
 
 
 async def fetch_json(
@@ -28,6 +52,7 @@ async def fetch_json(
     """단일 API를 호출해 JSON을 반환한다.
 
     일시적인 네트워크 오류에 대비해 최대 `retries` 회까지 재시도한다.
+    오류 종류에 따라 대기 시간을 다르게 두며(_retry_delay 참고),
     최종 실패 시 예외를 그대로 올려 보내 상위(gather)에서 처리하게 한다.
     """
     last_error: Exception | None = None
@@ -42,9 +67,18 @@ async def fetch_json(
             return response.json()
         except (httpx.HTTPError, ValueError) as exc:  # 통신 오류 + JSON 파싱 오류
             last_error = exc
-            print(f"[수집 실패] {name:<8} attempt={attempt + 1}/{retries + 1} error={exc!r}")
+            # 429 는 코드 결함이 아니라 호출 제한이므로 메시지를 구분해 보여준다
+            reason = (
+                "호출 제한(429)"
+                if isinstance(exc, httpx.HTTPStatusError) and exc.response.status_code == 429
+                else type(exc).__name__
+            )
+            print(f"[수집 실패] {name:<8} attempt={attempt + 1}/{retries + 1} 원인={reason}")
+
             if attempt < retries:
-                await asyncio.sleep(0.5 * (attempt + 1))  # 지수적 대기 후 재시도
+                delay = _retry_delay(attempt, exc)
+                print(f"           {delay:.1f}초 후 재시도")
+                await asyncio.sleep(delay)
 
     # 재시도까지 모두 실패한 경우
     raise RuntimeError(f"{name} 수집 실패: {last_error!r}")

@@ -1,4 +1,5 @@
-"""비동기 수집 모듈.
+"""
+비동기 수집 모듈.
 
 asyncio + httpx 를 사용해 3개의 공개 API를 asyncio.gather() 로 동시에 수집한다.
 - Open-Meteo : 서울 3일 시간대별 기온·강수확률

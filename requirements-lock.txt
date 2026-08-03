@@ -17,6 +17,7 @@ Pygments==2.20.0
 pytest==9.1.1
 pytest-asyncio==1.4.0
 python-dateutil==2.9.0.post0
+python-dotenv==1.2.2
 ruff==0.16.1
 six==1.17.0
 typing-inspection==0.4.2

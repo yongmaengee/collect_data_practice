@@ -14,3 +14,8 @@ data/*.parquet
 
 # macOS
 .DS_Store
+
+#api
+
+# 환경변수 (실제 값) - 저장소에 올리지 않음
+.env

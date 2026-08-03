@@ -1,0 +1,16 @@
+# 가상환경
+.venv/
+venv/
+
+# 파이썬 캐시
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+
+# 실행 산출물 (데이터 저장 결과)
+data/*.csv
+data/*.parquet
+
+# macOS
+.DS_Store
